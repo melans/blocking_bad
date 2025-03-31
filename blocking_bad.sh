@@ -21,7 +21,7 @@
 #              It provides a significant hurdle for standard applications only.
 #
 # Author:      [Your Name/Handle Here] / Adapted from common examples
-# Version:     1.2.1 (Fixed sed delimiter issue)
+# Version:     1.2.2 (Improved sed regex escaping)
 # ==============================================================================
 
 # --- Configuration ---
@@ -73,10 +73,7 @@ cleanup() {
     log_message "Cleaning up temporary directory: $TEMP_DIR"
     rm -rf "$TEMP_DIR"
   fi
-  # Avoid double printing error if trap is called after script already printed error
-  # Instead, just indicate cleanup happened.
   log_message "Cleanup finished (Script exit code was: $exit_status)."
-  # Restore default exit behavior if needed, though script ends here.
 }
 
 check_command() {
@@ -87,6 +84,14 @@ check_command() {
     exit 1
   fi
 }
+
+# *** NEW/IMPROVED FUNCTION ***
+escape_sed_regex() {
+    # Escape characters special to sed's regex patterns: . * [ ] \ ^ $ ( ) /
+    # Using printf for potentially safer handling than <<< with sed
+    printf '%s' "$1" | sed -e 's/[]\/$*.^()[]/\\&/g'
+}
+
 
 # --- Pre-execution Checks ---
 log_message "--- Starting blocking_bad Hosts Update ---"
@@ -105,17 +110,13 @@ check_command "awk"
 check_command "sed"
 check_command "mktemp"
 check_command "wc"
-check_command "date" # Added for explicitness
-check_command "basename" # Added for explicitness
+check_command "date"
+check_command "basename"
+check_command "printf" # For the escape function
 
 # 3. Create Temporary Directory and Register Cleanup
 TEMP_DIR=$(mktemp -d "/tmp/blocking_bad.XXXXXX")
-if [ ! -d "$TEMP_DIR" ]; then
-    log_message "ERROR: Failed to create temporary directory." >&2
-    exit 1
-fi
-# Ensure cleanup runs on script exit (normal or error) or interrupt
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM # Ensure cleanup runs on exit/interrupt
 log_message "Using temporary directory: $TEMP_DIR"
 
 # --- Main Execution ---
@@ -135,15 +136,11 @@ download_success_count=0
 download_error_count=0
 
 for url in "${BLOCKLIST_URLS[@]}"; do
-  # Sanitize basename for temp file to prevent issues with weird characters in URLs
   safe_basename=$(basename "$url" | sed 's/[^a-zA-Z0-9._-]/_/g')
   TEMP_LIST_DL="$TEMP_DIR/dl_${safe_basename}.tmp"
   log_message " -> Downloading: $url"
-  # Curl: silent, fail-fast, follow redirects, connect timeout 15s, max time 60s
   if curl -sfL --connect-timeout 15 --max-time 60 "$url" -o "$TEMP_LIST_DL"; then
-    if [ -s "$TEMP_LIST_DL" ]; then # Check if file has content
-      # Filter valid entries (0.0.0.0 or 127.0.0.1, space/tab, then domain, ignore comments/blank)
-      # Use awk: Robustly check $1 is target IP, $2 exists and isn't a comment starter itself.
+    if [ -s "$TEMP_LIST_DL" ]; then
       awk 'NF >= 2 && $1 ~ /^(0\.0\.0\.0|127\.0\.0\.1)$/ && $2 !~ /^#|^$/ { print $1 " " $2 }' "$TEMP_LIST_DL" >> "$COMBINED_RAW_LIST"
       log_message " -> Downloaded $(wc -l < "$TEMP_LIST_DL") lines, filtered and added valid entries."
       download_success_count=$((download_success_count + 1))
@@ -152,17 +149,16 @@ for url in "${BLOCKLIST_URLS[@]}"; do
       download_error_count=$((download_error_count + 1))
     fi
   else
-    curl_exit_code=$? # Capture exit code immediately
+    curl_exit_code=$?
     log_message " -> ERROR: Failed to download from $url (curl exit code $curl_exit_code). Skipping."
     download_error_count=$((download_error_count + 1))
   fi
-  rm -f "$TEMP_LIST_DL" # Clean up download temp file
+  rm -f "$TEMP_LIST_DL"
 done
 
 if [ $download_success_count -eq 0 ]; then
   log_message "ERROR: Failed to download any blocklists. No changes made to hosts file."
-  log_message "       Please check network connection and BLOCKLIST_URLS in the script."
-  exit 1 # Exit with error as no lists were obtained
+  exit 1
 fi
 if [ $download_error_count -gt 0 ]; then
   log_message "WARNING: $download_error_count blocklist downloads failed. Proceeding with successfully downloaded lists."
@@ -173,14 +169,10 @@ PROCESSED_LIST="$TEMP_DIR/processed_list.txt"
 log_message "Processing combined list: Standardizing to 0.0.0.0, removing duplicates..."
 
 if [ ! -s "$COMBINED_RAW_LIST" ]; then
-    log_message "WARNING: No valid host entries found after downloading and filtering. Hosts file will not be modified significantly (only markers)."
-    # Create an empty processed list to avoid errors later
-    touch "$PROCESSED_LIST"
+    log_message "WARNING: No valid host entries found after downloading/filtering."
+    touch "$PROCESSED_LIST" # Ensure file exists
     PROCESSED_COUNT=0
 else
-    # Standardize all entries to use 0.0.0.0, then sort and get unique entries.
-    # Use awk to ensure only the first two fields (IP, domain) are kept and IP is standardized.
-    # Added protection against lines with only IP and no domain after filtering
     awk '$2 != "" {print "0.0.0.0 " $2}' "$COMBINED_RAW_LIST" | sort -u > "$PROCESSED_LIST"
     PROCESSED_COUNT=$(wc -l < "$PROCESSED_LIST")
 fi
@@ -188,27 +180,21 @@ fi
 log_message "Processing complete. Found $PROCESSED_COUNT unique block entries."
 
 if [ "$PROCESSED_COUNT" -eq 0 ] && [ $download_success_count -gt 0 ]; then
-    # We downloaded *something* but filtering removed everything.
     log_message "WARNING: All downloaded entries were filtered out or invalid. Check blocklist source formats."
-    # Allow script to continue to ensure markers are placed/cleaned up, but list will be empty.
 fi
 
 # 4. Update Hosts File
 log_message "Updating $HOSTS_FILE..."
 
-# Escape markers for regex use. This simple escaping handles most cases needed for sed addresses.
-# It escapes ., *, [, \, ^, $
-escape_regex() {
-    sed -e 's/[]\/$*.^|[]/\\&/g' <<< "$1"
-}
-ESCAPED_MARKER_BEGIN=$(escape_regex "$MARKER_BEGIN")
-ESCAPED_MARKER_END=$(escape_regex "$MARKER_END")
-
+# *** USE THE NEW ESCAPE FUNCTION ***
+ESCAPED_MARKER_BEGIN=$(escape_sed_regex "$MARKER_BEGIN")
+ESCAPED_MARKER_END=$(escape_sed_regex "$MARKER_END")
 
 # Remove existing block managed by this script
 log_message " -> Removing old blocking_bad section (if exists)..."
-# *** THE FIX IS HERE: Changed delimiter from # to | ***
+# *** Use | as delimiter, ensure variables are quoted if needed (though should be safe) ***
 sed -i "\|^${ESCAPED_MARKER_BEGIN}$|,\|^${ESCAPED_MARKER_END}$|d" "$HOSTS_FILE"
+
 
 # Prepare the new block content
 TEMP_APPEND="$TEMP_DIR/hosts_append.txt"
@@ -217,8 +203,7 @@ TEMP_APPEND="$TEMP_DIR/hosts_append.txt"
   echo "$MARKER_BEGIN"
   echo "# Updated: $(date)"
   echo "# Entries: $PROCESSED_COUNT"
-  # Add processed list content - cat will not fail on empty file
-  cat "$PROCESSED_LIST"
+  cat "$PROCESSED_LIST" # Add processed list content
   echo "$MARKER_END"
   echo "" # Ensure newline after block
 } > "$TEMP_APPEND"
@@ -232,13 +217,10 @@ log_message "Hosts file update complete."
 # 5. Attempt to Flush DNS Cache (Best effort)
 log_message "Attempting to flush DNS cache..."
 cache_flushed=false
-# Check systemd-resolved first (covers systemd-resolve and resolvectl)
 if command -v resolvectl &> /dev/null && systemctl is-active --quiet systemd-resolved; then
    if resolvectl flush-caches; then log_message " -> resolvectl cache flushed."; cache_flushed=true; else log_message " -> resolvectl flush failed."; fi
-# Fallback check for older systemd-resolve command if resolvectl isn't present but service is
 elif command -v systemd-resolve &> /dev/null && systemctl is-active --quiet systemd-resolved; then
   if systemd-resolve --flush-caches; then log_message " -> systemd-resolved cache flushed."; cache_flushed=true; else log_message " -> systemd-resolve flush failed."; fi
-# Fallback for nscd
 elif command -v nscd &> /dev/null && systemctl is-active --quiet nscd; then
   if systemctl restart nscd; then log_message " -> nscd service restarted."; cache_flushed=true; else log_message " -> nscd restart failed."; fi
 fi
@@ -250,6 +232,5 @@ fi
 # --- Final Notes ---
 log_message "Reminder: Tor Browser and DNS-over-HTTPS likely bypass these blocks."
 log_message "Backup of previous hosts file is in: $BACKUP_FILE"
-# Cleanup is handled by the trap
 
-exit 0 # Explicitly exit with success code
+exit 0
