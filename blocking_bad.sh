@@ -21,7 +21,7 @@
 #              It provides a significant hurdle for standard applications only.
 #
 # Author:      [Your Name/Handle Here] / Adapted from common examples
-# Version:     1.2
+# Version:     1.2.1 (Fixed sed delimiter issue)
 # ==============================================================================
 
 # --- Configuration ---
@@ -73,11 +73,9 @@ cleanup() {
     log_message "Cleaning up temporary directory: $TEMP_DIR"
     rm -rf "$TEMP_DIR"
   fi
-  if [ $exit_status -ne 0 ]; then
-      log_message "Script finished with errors (Exit Code: $exit_status)."
-  else
-      log_message "Script finished successfully."
-  fi
+  # Avoid double printing error if trap is called after script already printed error
+  # Instead, just indicate cleanup happened.
+  log_message "Cleanup finished (Script exit code was: $exit_status)."
   # Restore default exit behavior if needed, though script ends here.
 }
 
@@ -107,6 +105,8 @@ check_command "awk"
 check_command "sed"
 check_command "mktemp"
 check_command "wc"
+check_command "date" # Added for explicitness
+check_command "basename" # Added for explicitness
 
 # 3. Create Temporary Directory and Register Cleanup
 TEMP_DIR=$(mktemp -d "/tmp/blocking_bad.XXXXXX")
@@ -135,7 +135,9 @@ download_success_count=0
 download_error_count=0
 
 for url in "${BLOCKLIST_URLS[@]}"; do
-  TEMP_LIST_DL="$TEMP_DIR/dl_$(basename "$url" | sed 's/[^a-zA-Z0-9._-]/_/g').tmp"
+  # Sanitize basename for temp file to prevent issues with weird characters in URLs
+  safe_basename=$(basename "$url" | sed 's/[^a-zA-Z0-9._-]/_/g')
+  TEMP_LIST_DL="$TEMP_DIR/dl_${safe_basename}.tmp"
   log_message " -> Downloading: $url"
   # Curl: silent, fail-fast, follow redirects, connect timeout 15s, max time 60s
   if curl -sfL --connect-timeout 15 --max-time 60 "$url" -o "$TEMP_LIST_DL"; then
@@ -150,7 +152,8 @@ for url in "${BLOCKLIST_URLS[@]}"; do
       download_error_count=$((download_error_count + 1))
     fi
   else
-    log_message " -> ERROR: Failed to download from $url (curl exit code $?). Skipping."
+    curl_exit_code=$? # Capture exit code immediately
+    log_message " -> ERROR: Failed to download from $url (curl exit code $curl_exit_code). Skipping."
     download_error_count=$((download_error_count + 1))
   fi
   rm -f "$TEMP_LIST_DL" # Clean up download temp file
@@ -177,7 +180,8 @@ if [ ! -s "$COMBINED_RAW_LIST" ]; then
 else
     # Standardize all entries to use 0.0.0.0, then sort and get unique entries.
     # Use awk to ensure only the first two fields (IP, domain) are kept and IP is standardized.
-    awk '{print "0.0.0.0 " $2}' "$COMBINED_RAW_LIST" | sort -u > "$PROCESSED_LIST"
+    # Added protection against lines with only IP and no domain after filtering
+    awk '$2 != "" {print "0.0.0.0 " $2}' "$COMBINED_RAW_LIST" | sort -u > "$PROCESSED_LIST"
     PROCESSED_COUNT=$(wc -l < "$PROCESSED_LIST")
 fi
 
@@ -192,13 +196,19 @@ fi
 # 4. Update Hosts File
 log_message "Updating $HOSTS_FILE..."
 
-# Use sed with a different delimiter (#) to avoid issues if markers contain /
-ESCAPED_MARKER_BEGIN=$(sed 's/[^^]/[&]/g; s/\^/\\^/g' <<< "$MARKER_BEGIN")
-ESCAPED_MARKER_END=$(sed 's/[^^]/[&]/g; s/\^/\\^/g' <<< "$MARKER_END")
+# Escape markers for regex use. This simple escaping handles most cases needed for sed addresses.
+# It escapes ., *, [, \, ^, $
+escape_regex() {
+    sed -e 's/[]\/$*.^|[]/\\&/g' <<< "$1"
+}
+ESCAPED_MARKER_BEGIN=$(escape_regex "$MARKER_BEGIN")
+ESCAPED_MARKER_END=$(escape_regex "$MARKER_END")
+
 
 # Remove existing block managed by this script
 log_message " -> Removing old blocking_bad section (if exists)..."
-sed -i "\#^${ESCAPED_MARKER_BEGIN}$#,\#^${ESCAPED_MARKER_END}$#d" "$HOSTS_FILE"
+# *** THE FIX IS HERE: Changed delimiter from # to | ***
+sed -i "\|^${ESCAPED_MARKER_BEGIN}$|,\|^${ESCAPED_MARKER_END}$|d" "$HOSTS_FILE"
 
 # Prepare the new block content
 TEMP_APPEND="$TEMP_DIR/hosts_append.txt"
@@ -222,10 +232,13 @@ log_message "Hosts file update complete."
 # 5. Attempt to Flush DNS Cache (Best effort)
 log_message "Attempting to flush DNS cache..."
 cache_flushed=false
-if command -v systemd-resolve &> /dev/null && systemctl is-active --quiet systemd-resolved; then
-  if systemd-resolve --flush-caches; then log_message " -> systemd-resolved cache flushed."; cache_flushed=true; else log_message " -> systemd-resolve flush failed."; fi
-elif command -v resolvectl &> /dev/null && systemctl is-active --quiet systemd-resolved; then
+# Check systemd-resolved first (covers systemd-resolve and resolvectl)
+if command -v resolvectl &> /dev/null && systemctl is-active --quiet systemd-resolved; then
    if resolvectl flush-caches; then log_message " -> resolvectl cache flushed."; cache_flushed=true; else log_message " -> resolvectl flush failed."; fi
+# Fallback check for older systemd-resolve command if resolvectl isn't present but service is
+elif command -v systemd-resolve &> /dev/null && systemctl is-active --quiet systemd-resolved; then
+  if systemd-resolve --flush-caches; then log_message " -> systemd-resolved cache flushed."; cache_flushed=true; else log_message " -> systemd-resolve flush failed."; fi
+# Fallback for nscd
 elif command -v nscd &> /dev/null && systemctl is-active --quiet nscd; then
   if systemctl restart nscd; then log_message " -> nscd service restarted."; cache_flushed=true; else log_message " -> nscd restart failed."; fi
 fi
