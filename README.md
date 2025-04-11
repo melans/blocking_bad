@@ -51,28 +51,25 @@ The primary intended use is via the `bb` alias:
 
 ## Installation / Setup
 
-1.  **Add the Alias:** You need to add the `bb` alias definition to your shell's startup file. Common files are:
-    *   For Bash: `~/.bashrc`
-    *   For Zsh: `~/.zshrc`
-    *   Or your custom alias file (like `~/.mr` as used by the author).
-
-    Paste the following **single line** into your chosen startup file:
+1.  **Add the `bb` Alias:** Add the main `bb` alias definition to your shell's startup file (e.g., `~/.bashrc`, `~/.zshrc`, `~/.mr`).
 
     ```sh
     alias bb='cd "$HOME" && SCRIPT="blocking_bad.sh"; URL="https://raw.githubusercontent.com/melans/blocking_bad/main/blocking_bad.sh"; echo "[bb] Ensuring latest $SCRIPT..."; curl -sfLo "$SCRIPT" "$URL" && chmod +x "$SCRIPT" && echo "[bb] Running $SCRIPT with sudo..." && sudo "$HOME/$SCRIPT" "$@" || echo "[bb] ERROR: Failed to download, prepare, or run $SCRIPT."'
     ```
 
-2.  **Activate the Alias:** Either close and reopen your terminal, or manually source the startup file, for example:
+2.  **(Optional) Add the `bbx` Reversal Alias:** If you want a quick command to undo the changes, you can add the `bbx` alias to the *same* startup file. See the "Restoring / Uninstalling" section below for details and alternative reversal methods.
+
+3.  **Activate Aliases:** Either close and reopen your terminal, or manually source the startup file:
     ```bash
     source ~/.bashrc
     # or source ~/.zshrc, source ~/.mr, etc.
     ```
 
-3.  **Dependencies:** The script requires standard command-line tools. Most should be pre-installed on Debian-based systems. The alias requires `curl`. The script explicitly checks for: `curl`, `grep`, `sort`, `awk`, `sed`, `mktemp`, `wc`, `date`, `basename`, `printf`. If any are missing, install them using `sudo apt update && sudo apt install <package_name>`. (`coreutils` provides many of these).
+4.  **Dependencies:** The script requires standard command-line tools. Most should be pre-installed on Debian-based systems. The alias requires `curl`. The script explicitly checks for: `curl`, `grep`, `sort`, `awk`, `sed`, `mktemp`, `wc`, `date`, `basename`, `printf`. If any are missing, install them using `sudo apt update && sudo apt install <package_name>`. (`coreutils` provides many of these).
 
 ## Usage
 
-Once the alias is set up and activated:
+Once the `bb` alias is set up and activated:
 
 1.  Open your terminal.
 2.  Run the alias:
@@ -81,6 +78,8 @@ Once the alias is set up and activated:
     ```
 3.  You will likely be prompted for your `sudo` password as the script needs root privileges to modify `/etc/hosts`.
 4.  The alias will download the latest script, make it executable, and run it. Follow the on-screen logs.
+
+To reverse the changes, use one of the methods described in "Restoring / Uninstalling".
 
 ## Configuration
 
@@ -92,36 +91,46 @@ The list of blocklist URLs (`BLOCKLIST_URLS` array) is currently hardcoded withi
 
 ## Troubleshooting
 
-*   **Permission Denied / Requires Root:** The script *must* be run with `sudo` because it modifies `/etc/hosts`. The alias handles this, but ensure you can use `sudo`.
-*   **`sed: unterminated address regex`:** This error should be fixed as of v1.2.2. Ensure the `bb` alias is downloading the latest version (the alias provided forces this). If it persists, there might be extremely unusual characters in `/etc/hosts` interfering.
+*   **Permission Denied / Requires Root:** The script *must* be run with `sudo`. The `bb` and `bbx` aliases handle this, but ensure you can use `sudo`.
+*   **`sed: unterminated address regex` (During `bbx`):** This error indicates a problem with the complex quoting/escaping within the `bbx` alias definition. This can sometimes be shell-dependent. If you encounter this, consider using the Manual Removal or Restore Backup methods described below, or setting up the alternative `reverse_blocking_bad.sh` script (see [here](link_to_conversation_or_gist_if_available) for details on that approach).
 *   **Command not found (curl, awk, etc.):** Install the missing command using `sudo apt install <command_name>`.
-*   **Site Still Accessible:**
+*   **Site Still Accessible (After `bb`):**
     *   **Confirm Tor/DoH:** Are you using Tor Browser or is DNS-over-HTTPS active in your regular browser? This script cannot block those (see Warning section).
     *   **Check Lists:** The specific domain might not be included in the public blocklists used.
-    *   **DNS Cache:** While the script attempts to flush the cache, it might not work on all systems/configurations. Try manually restarting your browser, or even your computer. You can also try manual cache flushing commands specific to your setup if you know them.
-    *   **Syntax Error:** Check `/etc/hosts` for any obvious syntax errors manually (though the script aims to prevent this). Look for lines not matching `IP_ADDRESS domain_name`.
+    *   **DNS Cache:** While the script attempts to flush the cache, it might not work on all systems/configurations. Try manually restarting your browser, or even your computer.
+    *   **Syntax Error:** Check `/etc/hosts` for any obvious syntax errors manually.
 
 ## Restoring / Uninstalling
 
-To remove the blocks added by this script:
+To remove the blocks added by this script, choose one of the following methods:
 
-**Method 1: Manual Removal**
+**Method 1: Using the `bbx` Alias (If Added and Working)**
 
+1.  Ensure you have added the `bbx` alias (see step 2 in Installation) to your shell startup file and activated it (e.g., `source ~/.mr`).
+2.  Run the alias:
     ```bash
-    alias bbx='echo "[bbx] Reversing blocking_bad changes..."; ( sudo sed -i "/^# BEGIN MANAGED BLOCKLIST (blocking_bad\\.sh v1\\.2) ### DO NOT EDIT MANUALLY BELOW ###$/,/^# END MANAGED BLOCKLIST (blocking_bad\\.sh v1\\.2) ### Run '\''bb'\'' to update ###$/d" /etc/hosts && echo "[bbx] Block removed from /etc/hosts." && echo "[bbx] Attempting to flush DNS cache..." && (sudo resolvectl flush-caches 2>/dev/null || sudo systemd-resolve --flush-caches 2>/dev/null || sudo systemctl restart nscd 2>/dev/null) && echo "[bbx] DNS flush attempted." || echo "[bbx] DNS flush command failed or no suitable service found." && echo "[bbx] Reversal action complete. Backups are in /etc/hosts.backups.blocking_bad/." && \rm -f "$HOME/blocking_bad.sh" && echo "[bbx] Removed local script ~/blocking_bad.sh." ) || { echo "[bbx] ERROR: Failed to remove block from /etc/hosts (check markers manually or use backup). sed exit code: $?" >&2; }'
-
+    bbx
     ```
+3.  This command will attempt to directly remove the managed block from `/etc/hosts` using `sed`, flush DNS caches, and remove the local `~/blocking_bad.sh` script.
+4.  **The `bbx` alias definition is:**
+    ```sh
+    # Alias to reverse blocking_bad changes directly (use with caution - complex quoting)
+    alias bbx='echo "[bbx] Reversing blocking_bad changes..."; ( sudo sed -i "/^# BEGIN MANAGED BLOCKLIST (blocking_bad\\.sh v1\\.2) ### DO NOT EDIT MANUALLY BELOW ###$/,/^# END MANAGED BLOCKLIST (blocking_bad\\.sh v1\\.2) ### Run '\''bb'\'' to update ###$/d" /etc/hosts && echo "[bbx] Block removed from /etc/hosts." && echo "[bbx] Attempting to flush DNS cache..." && (sudo resolvectl flush-caches 2>/dev/null || sudo systemd-resolve --flush-caches 2>/dev/null || sudo systemctl restart nscd 2>/dev/null) && echo "[bbx] DNS flush attempted." || echo "[bbx] DNS flush command failed or no suitable service found." && echo "[bbx] Reversal action complete. Backups are in /etc/hosts.backups.blocking_bad/." && \rm -f "$HOME/blocking_bad.sh" && echo "[bbx] Removed local script ~/blocking_bad.sh." ) || { echo "[bbx] ERROR: Failed to remove block from /etc/hosts (check markers manually or use backup). sed exit code: $?" >&2; }'
+    ```
+    *Note: Complex aliases like this can sometimes be sensitive to shell environments. If `bbx` gives errors (like `sed: unterminated address regex`), use Method 2 or 3.*
+
+**Method 2: Manual Removal**
 
 1.  Edit the hosts file with root privileges: `sudo nano /etc/hosts`
-2.  Locate the block managed by this script. It starts with the line:
-    `# BEGIN MANAGED BLOCKLIST (blocking_bad.sh ...`
+2.  Locate the block managed by this script. It starts with the line (check version number if script updated):
+    `# BEGIN MANAGED BLOCKLIST (blocking_bad.sh v1.2) ### DO NOT EDIT MANUALLY BELOW ###`
 3.  It ends with the line:
-    `# END MANAGED BLOCKLIST (blocking_bad.sh ...`
+    `# END MANAGED BLOCKLIST (blocking_bad.sh v1.2) ### Run 'bb' to update ###`
 4.  Delete all lines between and including these two markers.
 5.  Save the file (Ctrl+O, Enter in `nano`) and exit (Ctrl+X).
 6.  Flush DNS cache / restart browser if needed.
 
-**Method 2: Restore Backup**
+**Method 3: Restore Backup**
 
 1.  List the available backups: `ls -l /etc/hosts.backups.blocking_bad/`
 2.  Identify a backup file from before you ran the script or before issues started (e.g., `hosts.backup.YYYYMMDD_HHMMSS`).
@@ -131,7 +140,7 @@ To remove the blocks added by this script:
     ```
 4.  Flush DNS cache / restart browser if needed.
 
-**To remove the alias:** Simply delete the `alias bb='...'` line from your shell startup file (`~/.bashrc`, `~/.mr`, etc.) and restart your shell or re-source the file. You can also delete the downloaded script: `rm ~/blocking_bad.sh`.
+**To remove the aliases:** Simply delete the `alias bb=...` and/or `alias bbx=...` lines from your shell startup file (`~/.bashrc`, `~/.mr`, etc.) and restart your shell or re-source the file. If you are not using `bbx`, you might also want to delete the potentially downloaded script: `rm -f ~/blocking_bad.sh`.
 
 ## Contributing
 
@@ -151,4 +160,3 @@ Please try to follow the existing coding style and add comments where necessary.
 ## License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for full details.
-
