@@ -109,8 +109,8 @@ To remove the blocks added by this script:
 
     ```bash
     alias bbx='echo "[bbx] Reversing blocking_bad changes..."; ( sudo sed -i "/^# BEGIN MANAGED BLOCKLIST (blocking_bad\\.sh v1\\.2) ### DO NOT EDIT MANUALLY BELOW ###$/,/^# END MANAGED BLOCKLIST (blocking_bad\\.sh v1\\.2) ### Run '\''bb'\'' to update ###$/d" /etc/hosts && echo "[bbx] Block removed from /etc/hosts." && echo "[bbx] Attempting to flush DNS cache..." && (sudo resolvectl flush-caches 2>/dev/null || sudo systemd-resolve --flush-caches 2>/dev/null || sudo systemctl restart nscd 2>/dev/null) && echo "[bbx] DNS flush attempted." || echo "[bbx] DNS flush command failed or no suitable service found." && echo "[bbx] Reversal action complete. Backups are in /etc/hosts.backups.blocking_bad/." && \rm -f "$HOME/blocking_bad.sh" && echo "[bbx] Removed local script ~/blocking_bad.sh." ) || { echo "[bbx] ERROR: Failed to remove block from /etc/hosts (check markers manually or use backup). sed exit code: $?" >&2; }'
-    ```
 
+    ```
 
 1.  Edit the hosts file with root privileges: `sudo nano /etc/hosts`
 2.  Locate the block managed by this script. It starts with the line:
